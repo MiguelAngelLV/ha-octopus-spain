@@ -1,110 +1,49 @@
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 
-from python_graphql_client import GraphqlClient
+from custom_components.octopus_spain.api import (
+    GetAccountsViewerAccountsAccount,
+    OctopusAPI,
+)
 
-GRAPH_QL_ENDPOINT = "https://api.oees-kraken.energy/v1/graphql/"
-SOLAR_WALLET_LEDGER = "SOLAR_WALLET_LEDGER"
-ELECTRICITY_LEDGER = "SPAIN_ELECTRICITY_LEDGER"
 
+@dataclass
+class OctopusAccount:
+    id: str
+    solar_wallet: float
+    octopus_credit: float
+    price_p1: float
+    price_p2: float
+    price_p3: float
+    prices_surplus: float
+
+def _convert_account(account: GetAccountsViewerAccountsAccount):
+    prices = account.properties[0].electricity_supply_points[0].active_agreement.product.prices
+    return OctopusAccount(
+        id=account.number,
+        solar_wallet=account.solar_wallet_available_credit/100,
+        octopus_credit=account.balance/100,
+        price_p1=prices.variable_term[0],
+        price_p2=prices.variable_term[1],
+        price_p3=prices.variable_term[2],
+        prices_surplus=prices.surplus_rate
+    )
 
 class OctopusSpain:
+
+    _URL = "https://api.oees-kraken.energy/v1/graphql/"
+
     def __init__(self, email, password):
+        self._api = None
         self._email = email
         self._password = password
         self._token = None
 
     async def login(self):
-        mutation = """
-           mutation obtainKrakenToken($input: ObtainJSONWebTokenInput!) {
-              obtainKrakenToken(input: $input) {
-                token
-              }
-            }
-        """
-        variables = {"input": {"email": self._email, "password": self._password}}
-
-        client = GraphqlClient(endpoint=GRAPH_QL_ENDPOINT)
-        response = await client.execute_async(mutation, variables)
-
-        if "errors" in response:
-            return False
-
-        self._token = response["data"]["obtainKrakenToken"]["token"]
+        self._api = OctopusAPI(url=self._URL)
+        response = await self._api.login(self._email, self._password)
+        self._api = OctopusAPI(url=self._URL, headers={"authorization": response.obtain_kraken_token.token})
         return True
 
     async def accounts(self):
-        query = """
-             query getAccountNames{
-                viewer {
-                    accounts {
-                        ... on Account {
-                            number
-                        }
-                    }
-                }
-            }
-            """
-
-        headers = {"authorization": self._token}
-        client = GraphqlClient(endpoint=GRAPH_QL_ENDPOINT, headers=headers)
-        response = await client.execute_async(query)
-
-        return list(map(lambda a: a["number"], response["data"]["viewer"]["accounts"]))
-
-    async def account(self, account: str):
-        query = """
-            query ($account: String!) {
-              accountBillingInfo(accountNumber: $account) {
-                ledgers {
-                  ledgerType
-                  statementsWithDetails(first: 1) {
-                    edges {
-                      node {
-                        amount
-                        consumptionStartDate
-                        consumptionEndDate
-                        issuedDate
-                      }
-                    }
-                  }
-                  balance
-                }
-              }
-            }
-        """
-        headers = {"authorization": self._token}
-        client = GraphqlClient(endpoint=GRAPH_QL_ENDPOINT, headers=headers)
-        response = await client.execute_async(query, {"account": account})
-        ledgers = response["data"]["accountBillingInfo"]["ledgers"]
-        electricity = next(filter(lambda x: x['ledgerType'] == ELECTRICITY_LEDGER, ledgers), None)
-        solar_wallet = next(filter(lambda x: x['ledgerType'] == SOLAR_WALLET_LEDGER, ledgers), {'balance': 0})
-
-        if not electricity:
-            raise Exception("Electricity ledger not found")
-
-        invoices = electricity["statementsWithDetails"]["edges"]
-
-        if len(invoices) == 0:
-            return {
-                'solar_wallet': None,
-                'last_invoice': {
-                    'amount': None,
-                    'issued': None,
-                    'start': None,
-                    'end': None
-                }
-            }
-
-        invoice = invoices[0]["node"]
-
-        # Los timedelta son bastante chapuzas, habrá que arreglarlo
-        return {
-            "solar_wallet": (float(solar_wallet["balance"]) / 100),
-            "octopus_credit": (float(electricity["balance"]) / 100),
-            "last_invoice": {
-                "amount": invoice["amount"] if invoice["amount"] else 0,
-                "issued": datetime.fromisoformat(invoice["issuedDate"]).date(),
-                "start": (datetime.fromisoformat(invoice["consumptionStartDate"]) + timedelta(hours=2)).date(),
-                "end": (datetime.fromisoformat(invoice["consumptionEndDate"]) - timedelta(seconds=1)).date(),
-            },
-        }
+        response = await self._api.get_accounts()
+        return map(_convert_account, response.viewer.accounts)

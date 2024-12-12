@@ -1,0 +1,2 @@
+schema: https://api.oees-kraken.energy/v1/graphql/
+documents: '**/*.graphql'

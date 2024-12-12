@@ -1,0 +1,35 @@
+query GetAccounts {
+    viewer {
+        accounts {
+            ... on Account {
+                number
+                solarWalletAvailableCredit
+                balance
+
+                properties {
+                    id
+                    electricitySupplyPoints {
+                        activeAgreement {
+                            details {
+                                contractualMaxPower
+                            }
+                            product {
+                                prices {
+                                    fixedTerm
+                                    variableTerm
+                                    surplusRate
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+mutation Login($email: String!, $password: String!) {
+    obtainKrakenToken(input: { email: $email, password: $password}) {
+        token
+    }
+}

@@ -1,9 +1,13 @@
+from __future__ import annotations
 import logging
 from datetime import timedelta
 from typing import Mapping, Any
 
+from aioesphomeapi import SensorStateClass
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, CoordinatorEntity
+from typing_extensions import override
+
 from .const import (
     CONF_PASSWORD,
     CONF_EMAIL, UPDATE_INTERVAL
@@ -20,7 +24,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from .lib.octopus_spain import OctopusSpain
+from .lib.octopus_spain import OctopusSpain, OctopusAccount
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,50 +36,55 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     sensors = []
     coordinator = OctopusCoordinator(hass, email, password)
     await coordinator.async_config_entry_first_refresh()
-
     accounts = coordinator.data.keys()
+    single =  len(accounts) == 1
+
     for account in accounts:
-        sensors.append(OctopusWallet(account, 'solar_wallet', 'Solar Wallet', coordinator, len(accounts) == 1))
-        sensors.append(OctopusWallet(account, 'octopus_credit', 'Octopus Credit', coordinator, len(accounts) == 1))
-        sensors.append(OctopusInvoice(account, coordinator, len(accounts) == 1))
+        sensors.append(OctopusSolarWallet(account, coordinator, single))
+        sensors.append(OctopusSolarWallet(account, coordinator, single))
+    #HASS.run.xml    sensors.append(OctopusInvoice(account, coordinator, len(accounts) == 1))
 
     async_add_entities(sensors)
 
 
 class OctopusCoordinator(DataUpdateCoordinator):
+    """Octopus Coordinator for get all data from server."""
 
-    def __init__(self, hass: HomeAssistant, email: str, password: str):
+    @override
+    def __init__(self, hass: HomeAssistant, email: str, password: str) -> None:
         super().__init__(hass=hass, logger=_LOGGER, name="Octopus Spain", update_interval=timedelta(hours=UPDATE_INTERVAL))
         self._api = OctopusSpain(email, password)
         self._data = {}
 
-    async def _async_update_data(self):
+    async def _async_update_data(self) -> dict[str, OctopusAccount]:
         if await self._api.login():
             self._data = {}
             accounts = await self._api.accounts()
             for account in accounts:
-                self._data[account] = await self._api.account(account)
+                self._data[account.id] = account
 
         return self._data
 
 
-class OctopusWallet(CoordinatorEntity, SensorEntity):
+class OctopusSolarWallet(CoordinatorEntity, SensorEntity):
+    """Solar Wallet Sensor."""
 
-    def __init__(self, account: str, key: str, name: str, coordinator, single: bool):
+    @override
+    def __init__(self, account: str, coordinator: OctopusCoordinator, single: bool) -> None:
         super().__init__(coordinator=coordinator)
         self._state = None
-        self._key = key
         self._account = account
         self._attrs: Mapping[str, Any] = {}
-        self._attr_name = f"{name}" if single else f"{name} ({account})"
-        self._attr_unique_id = f"{key}_{account}"
+        self._attr_name = "Solar Wallet" if single else f"Solar Wallet ({account})"
+        self._attr_unique_id = f"solar_wallet_{account}"
         self.entity_description = SensorEntityDescription(
-            key=f"{key}_{account}",
+            key=f"solar_wallet_{account}",
             icon="mdi:piggy-bank-outline",
             native_unit_of_measurement=CURRENCY_EURO,
-            state_class=STATE_CLASS_MEASUREMENT
+            state_class=SensorStateClass.TOTAL
         )
 
+    @override
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self._handle_coordinator_update()
@@ -83,10 +92,46 @@ class OctopusWallet(CoordinatorEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self._state = self.coordinator.data[self._account][self._key]
+        self._state = self.coordinator.data[self._account].solar_wallet
         self.async_write_ha_state()
 
     @property
+    @override
+    def native_value(self) -> StateType:
+        return self._state
+
+
+
+class OctopusActualPrice(CoordinatorEntity, SensorEntity):
+    """Solar Wallet Sensor."""
+
+    @override
+    def __init__(self, account: str, coordinator: OctopusCoordinator, single: bool) -> None:
+        super().__init__(coordinator=coordinator)
+        self._state = None
+        self._account = account
+        self._attrs: Mapping[str, Any] = {}
+        self._attr_name = "Precio Actual" if single else f"Precio Actual ({account})"
+        self._attr_unique_id = f"actual_price_{account}"
+        self.entity_description = SensorEntityDescription(
+            key=f"actual_price_{account}",
+            icon="mdi:cash",
+            native_unit_of_measurement="€/kWh"
+        )
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._state = self.coordinator.data[self._account].solar_wallet
+        self.async_write_ha_state()
+
+    @property
+    @override
     def native_value(self) -> StateType:
         return self._state
 
@@ -104,7 +149,7 @@ class OctopusInvoice(CoordinatorEntity, SensorEntity):
             key=f"last_invoice_{account}",
             icon="mdi:currency-eur",
             native_unit_of_measurement=CURRENCY_EURO,
-            state_class=STATE_CLASS_MEASUREMENT
+            state_class=SensorStateClass.MEASUREMENT
         )
 
     async def async_added_to_hass(self) -> None:
